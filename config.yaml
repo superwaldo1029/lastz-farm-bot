@@ -11,7 +11,11 @@ match_threshold: 0.85         # default for every template
 # Per-template overrides
 thresholds:
   level_6: 0.93               # strict: "Lv.5" looks a lot like "Lv.6"
-  idle_squad: 0.72            # "zZ" scores 0.83-1.00 when idle, <0.6 otherwise
+  idle_squad: 0.72
+  back_arrow: 0.90            # dimmed arrow behind popups scores ~0.79
+  collect_exp: 0.80           # all 3 EXP bubbles 0.95+, anything else <0.68
+  collect_zent: 0.78          # Z coin bubbles 0.84+, anything else <0.54
+  collect_food: 0.82          # food cans 0.90+, anything else <0.72            # "zZ" scores 0.83-1.00 when idle, <0.6 otherwise
 
 # One entry per BlueStacks instance (one farm account each).
 devices:
@@ -40,6 +44,7 @@ cycle_minutes: [25, 45]
 free_march_template: idle_squad   # only send a march if a sleeping (idle) squad is showing
 home_template: home_map           # "Headquarters" button = we're on the world map
 reset_back_presses: 4
+reset_taps: [world_button]        # in the city, tap World instead of pressing back
 # exit_cancel_template: exit_cancel   # add once captured
 # no_march_template: no_free_march    # add once captured
 
@@ -62,3 +67,48 @@ gather_sequence:
     timeout: 8
   - find: march_button            # deploy panel, first idle squad preselected
     wait: [1.5, 2.5]
+
+# --- Timed routines (run after the gather marches when due) -------------------
+routines:
+  donate_tech:
+    every_minutes: [100, 130]
+    retry_minutes: 20
+    steps:
+      - find: alliance_button       # shield, bottom-right of world map
+      - find: alliance_techs
+        wait: [1.5, 2.2]
+      - find: tech_thumbs           # leader's recommended tech (thumbs-up badge)
+        offset: [85, 75]            # tap the tech icon, not the badge
+        tap_if_missing: [tab_combat, tab_dominator]
+      - find: donate_zent           # BLUE zent button only, never the gem one
+        region: [0.50, 0.68, 0.86, 0.78]
+        repeat: 20                  # tap until attempts run out (max 20)
+        repeat_wait: [0.6, 1.2]
+      - find: popup_close
+      - find: back_arrow            # tech tree -> alliance
+      - find: back_arrow            # alliance -> world map
+
+  collect_hq:                     # EXP + zent + food bubbles in the city. Electricity is never collected.
+    every_minutes: [60, 100]
+    retry_minutes: 20
+    steps:
+      - find: home_map            # "Headquarters" -> city view (centered on HQ)
+        wait: [2.0, 3.0]
+      - find: collect_exp         # EXP bubbles, left-hand buildings
+        optional: true
+        repeat: 5
+        timeout: 3
+      - find: collect_zent        # gold Z coin bubbles, top row
+        optional: true
+        repeat: 8
+        timeout: 2
+      - find: collect_food        # food cans on the farms (scrolls over if needed)
+        optional: true
+        repeat: 6
+        timeout: 2
+        scroll_if_missing:
+          swipe: [0.15, 0.50, 0.85, 0.52]
+          tries: 2
+      - find: world_button        # back to the world map
+        wait: [2.0, 3.0]
+

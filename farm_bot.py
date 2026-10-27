@@ -128,15 +128,24 @@ class FarmBot:
         self.max_marches = device_cfg.get("max_marches", cfg.get("max_marches", 4))
         self.debug_dir = ROOT / "debug"
         self.rr = 0  # round-robin position in the resource list, kept between cycles
+        self.routine_due = {}  # routine name -> unix time it is next due (0 = run on first cycle)
 
     # -- helpers ----------------------------------------------------------- #
-    def wait_for(self, name, timeout, poll=(0.6, 1.1)):
-        """Poll the screen until a template appears. Returns (screen, box) or (screen, None)."""
+    def wait_for(self, name, timeout, poll=(0.6, 1.1), region=None):
+        """Poll the screen until a template appears. Returns (screen, box) or (screen, None).
+        region = [x1, y1, x2, y2] as screen fractions: only look inside that area."""
         end = time.time() + timeout
         screen = None
         while True:
             screen = self.dev.screenshot()
-            score, x, y, w, h = self.tpl.match(screen, name)
+            if region:
+                H, W = screen.shape[:2]
+                rx1, ry1 = int(region[0] * W), int(region[1] * H)
+                rx2, ry2 = int(region[2] * W), int(region[3] * H)
+                score, x, y, w, h = self.tpl.match(screen[ry1:ry2, rx1:rx2], name)
+                x, y = x + rx1, y + ry1
+            else:
+                score, x, y, w, h = self.tpl.match(screen, name)
             if score >= self.thresholds.get(name, self.threshold):
                 log.debug("[%s] found %s (%.2f)", self.name, name, score)
                 return screen, (x, y, w, h)
@@ -161,6 +170,17 @@ class FarmBot:
                 _, box = self.wait_for(home, timeout=0)
                 if box:
                     return
+            # reset_taps: buttons that lead home (e.g. "World" in the city) - tap instead of pressing back
+            tapped = False
+            for t in self.cfg.get("reset_taps", []) or []:
+                _, tbox = self.wait_for(t, timeout=0)
+                if tbox:
+                    self.dev.tap(*jitter_point(*tbox))
+                    human_sleep((1.5, 2.5))
+                    tapped = True
+                    break
+            if tapped:
+                continue
             self.dev.back()
             human_sleep((0.8, 1.4))
             if cancel:  # pressing back on the main screen may open "Exit game?"
@@ -178,7 +198,17 @@ class FarmBot:
 
         if "find" in step:
             name = step["find"].replace("{resource}", resource)
-            screen, box = self.wait_for(name, timeout)
+            region = step.get("region")
+            screen, box = self.wait_for(name, timeout, region=region)
+            # tap_if_missing: [tab_a, tab_b] -> tap each in turn and look again (e.g. switch tabs)
+            for alt in (step.get("tap_if_missing") or []) if not box else []:
+                _, abox = self.wait_for(alt, timeout=2)
+                if abox:
+                    self.dev.tap(*jitter_point(*abox))
+                    human_sleep((1.0, 1.6))
+                    screen, box = self.wait_for(name, timeout=2, region=region)
+                    if box:
+                        break
             # Scrollable lists (e.g. the resource carousel): swipe one way, then the other.
             scroll = step.get("scroll_if_missing")
             if not box and scroll:
@@ -200,7 +230,20 @@ class FarmBot:
                     return "skipped"
                 self.save_debug(screen, f"missing-{name}")
                 return "fail"
-            self.dev.tap(*jitter_point(*box))
+            ox, oy = step.get("offset", [0, 0])  # tap relative to the match, e.g. a badge's parent icon
+
+            def tap_box(b):
+                px, py = jitter_point(*b)
+                self.dev.tap(px + ox, py + oy)
+
+            tap_box(box)
+            # repeat: N  -> keep tapping while the button is still there (donate, collect bubbles)
+            for _ in range(int(step.get("repeat", 1)) - 1):
+                human_sleep(step.get("repeat_wait", [0.4, 0.9]))
+                screen, box = self.wait_for(name, timeout=step.get("repeat_timeout", 1.2), region=region)
+                if not box:
+                    break
+                tap_box(box)
 
         elif "ensure" in step:
             # Make sure a state is showing (e.g. "Lv.6"); if not, run the fix taps and re-check.
@@ -282,7 +325,32 @@ class FarmBot:
             sent += 1
             human_sleep(self.cfg.get("between_marches", [2, 6]))
         self.reset()
+        self.run_routines()
         return sent
+
+    # -- timed side tasks (donate, collect, ...) ----------------------------- #
+    def run_routines(self):
+        for name, r in (self.cfg.get("routines") or {}).items():
+            if not r.get("enabled", True):
+                continue
+            if time.time() < self.routine_due.get(name, 0):
+                continue
+            log.info("[%s] routine: %s", self.name, name)
+            ok = True
+            for step in r["steps"]:
+                if self.do_step(step, "") == "fail":
+                    log.warning("[%s] routine %s failed at %s", self.name, name, step)
+                    ok = False
+                    break
+            self.reset()
+            if ok:
+                lo, hi = r.get("every_minutes", [120, 180])
+                mins = random.uniform(lo, hi)
+            else:
+                mins = r.get("retry_minutes", 20)
+            self.routine_due[name] = time.time() + mins * 60
+            log.info("[%s] routine %s %s, next in %.0f min", self.name, name, "done" if ok else "failed", mins)
+            human_sleep(self.cfg.get("between_marches", [2, 6]))
 
 
 # --------------------------------------------------------------------------- #

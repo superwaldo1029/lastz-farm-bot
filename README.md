@@ -13,6 +13,11 @@ Each cycle, per BlueStacks instance:
 3. Taps the tile → Gather → March.
 4. Repeats until `max_marches` is reached or no squad is idle. Resources rotate in strict order (wood, food, ...).
 
+After the marches, timed **routines** run whenever they're due:
+
+- **donate_tech** (every 100–130 min): Alliance → Alliance Techs → the leader's thumbs-up tech (checks the Develop, Combat and Dominator tabs) → taps the **blue zent Donate** button until attempts run out. The gem Donate button is never tapped: the bot only looks on the right half of the popup, and the zent template scores 0.40 against the gem button.
+- **collect_hq** (every 60–100 min): Headquarters → city → taps all EXP, gold Z coin (zent) and food bubbles → World. **Electricity is never collected**, because there's no template for it.
+
 Every tap lands at a random point inside its button with a random hold time. Waits and check intervals are randomized too.
 
 ## Requirements
@@ -64,8 +69,16 @@ The service runs under `caffeinate`, so the Mac won't idle-sleep. Closing the li
 - `cycle_minutes`: random interval between checks
 - `active_hours`: optional run window (commented out = 24/7)
 - `thresholds`: per-template match cutoffs
-- `gather_sequence`: the step list. Step types:
-  - `find`: tap a template. Options: `optional`, and `scroll_if_missing` to swipe a carousel.
+- `routines`: timed side tasks, each with `every_minutes`, `retry_minutes` and `steps`
+- `reset_taps`: buttons to tap when backing out (for example `world_button` in the city, so the bot never presses back there)
+- `gather_sequence` and routine `steps` use the same step types:
+  - `find`: tap a template. Options:
+    - `optional`
+    - `repeat: N` to keep tapping while the button is still there
+    - `region` to search only part of the screen
+    - `offset` to tap relative to the match
+    - `scroll_if_missing` to swipe until the template appears
+    - `tap_if_missing` to try other tabs first
   - `ensure` + `fix`: confirm a state (for example `level_6`). If it's missing, press buttons N times and re-check.
   - `tap_frac`: tap a screen position given as a fraction
   - `back`, `sleep`
@@ -81,7 +94,14 @@ The service runs under `caffeinate`, so the Mac won't idle-sleep. Closing the li
 | `gather_button` | Gather on the tile popup |
 | `march_button` | March on the deploy panel |
 | `idle_squad` | "zZ" on an idle squad in the march queue |
-| `home_map` | Headquarters button, meaning the world map is showing |
+| `home_map` | Headquarters button, meaning the world map is showing (tap it to enter the city) |
+| `world_button` | World button in the city (tap it to return to the map) |
+| `alliance_button`, `alliance_techs` | Alliance menu → Alliance Techs |
+| `tech_thumbs` | Leader's recommended tech (thumbs-up badge) |
+| `tab_combat`, `tab_dominator` | Alliance tech tabs |
+| `donate_zent` | Blue zent Donate button (never the gem one) |
+| `popup_close`, `back_arrow` | Close the tech popup, back out of menus |
+| `collect_exp`, `collect_zent`, `collect_food` | City collection bubbles |
 
 When a step fails, the bot saves a screenshot to `debug/`.
 
@@ -89,5 +109,6 @@ When a step fails, the bot saves a screenshot to `debug/`.
 
 - Reconnect popup after the Mac wakes or the game drops its connection
 - "Exit game?" popup handling
+- Wood bubbles on the lumber yards (not captured yet)
 - Optional fixed squad-to-resource pairing
 - Second farm instance
