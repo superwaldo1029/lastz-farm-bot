@@ -1,0 +1,64 @@
+# ---------------------------------------------------------------------------
+# Last Z farm helper - configuration
+# Every template name is a PNG in templates/ (without the .png).
+# Screen layout: 1080x1920 portrait. Keep BlueStacks at this resolution.
+# ---------------------------------------------------------------------------
+
+adb_path: adb
+templates_dir: templates
+match_threshold: 0.85         # default for every template
+
+# Per-template overrides
+thresholds:
+  level_6: 0.93               # strict: "Lv.5" looks a lot like "Lv.6"
+  idle_squad: 0.72            # "zZ" scores 0.83-1.00 when idle, <0.6 otherwise
+
+# One entry per BlueStacks instance (one farm account each).
+devices:
+  - name: farm1
+    serial: 127.0.0.1:5555
+    max_marches: 2            # one wood + one food
+  # - name: farm2
+  #   serial: 127.0.0.1:5565
+  #   max_marches: 3
+  #   resources: [wood, food]          # zent is also captured: add it here to rotate it in
+shuffle_resources: false         # strict order: wood, food, wood, food...
+
+# Resource types to rotate through. Each needs templates/resource_<type>.png
+# Captured: wood (Lumberyard), food (Farmland), zent (Mining Zone).
+resources: [wood, food]          # zent is also captured: add it here to rotate it in
+shuffle_resources: false         # strict order: wood, food, wood, food...
+
+# --- Timing (seconds unless noted) -----------------------------------------
+default_wait: [0.8, 1.6]
+default_timeout: 6
+between_marches: [2, 6]
+cycle_minutes: [25, 45]
+# active_hours: [7, 23]       # runs 24/7; uncomment to give it a sleep window
+
+# --- Safety -------------------------------------------------------------------
+free_march_template: idle_squad   # only send a march if a sleeping (idle) squad is showing
+home_template: home_map           # "Headquarters" button = we're on the world map
+reset_back_presses: 4
+# exit_cancel_template: exit_cancel   # add once captured
+# no_march_template: no_free_march    # add once captured
+
+# --- The march flow (matches the real screens, wood captured 10/26) -----------
+gather_sequence:
+  - find: search_button           # magnifying glass, bottom-left of the world map
+  - find: resource_{resource}     # carousel tab, e.g. "Lumberyard"
+    scroll_if_missing:            # swipe the carousel if the tab is off-screen
+      swipe: [0.80, 0.67, 0.25, 0.67]
+      tries: 3
+  - ensure: level_6               # level resets per resource; force it to 6
+    fix:
+      - {press: level_minus, times: 6}   # down to Lv.1
+      - {press: level_plus,  times: 5}   # back up to Lv.6
+  - find: search_go               # blue Search button (level slider remembers your setting)
+    wait: [2.0, 3.0]              # map pans so the tile sits at screen center
+  - tap_frac: [0.5, 0.497]        # tap the tile to open its popup
+    wait: [1.0, 1.8]
+  - find: gather_button
+    timeout: 8
+  - find: march_button            # deploy panel, first idle squad preselected
+    wait: [1.5, 2.5]

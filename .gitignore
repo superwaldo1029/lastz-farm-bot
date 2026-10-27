@@ -1,0 +1,10 @@
+# Local environment
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Screenshots, debug captures and logs (can show player names / account info)
+snap-*.png
+debug/
+logs/
