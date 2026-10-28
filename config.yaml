@@ -15,7 +15,9 @@ thresholds:
   back_arrow: 0.90            # dimmed arrow behind popups scores ~0.79
   collect_exp: 0.80           # all 3 EXP bubbles 0.95+, anything else <0.68
   collect_zent: 0.78          # Z coin bubbles 0.84+, anything else <0.54
-  collect_food: 0.82          # food cans 0.90+, anything else <0.72            # "zZ" scores 0.83-1.00 when idle, <0.6 otherwise
+  collect_food: 0.82          # food cans 0.90+, anything else <0.72
+  collect_fuel: 0.85          # red fuel can 1.00, anything else <0.57
+  explore_chest: 0.92         # chest 1.00; the crossed-swords battle icon in the same spot scores 0.78            # "zZ" scores 0.83-1.00 when idle, <0.6 otherwise
 
 # One entry per BlueStacks instance (one farm account each).
 devices:
@@ -43,9 +45,14 @@ cycle_minutes: [25, 45]
 # --- Safety -------------------------------------------------------------------
 free_march_template: idle_squad   # only send a march if a sleeping (idle) squad is showing
 home_template: home_map           # "Headquarters" button = we're on the world map
-reset_back_presses: 4
+reset_back_presses: 6             # max Android back presses while recovering
 reset_taps: [world_button]        # in the city, tap World instead of pressing back
-# exit_cancel_template: exit_cancel   # add once captured
+exit_cancel_template: exit_cancel     # "Exit the game?" -> Cancel (never Confirm)
+exit_cancel_region: [0.50, 0.53, 0.86, 0.63]   # only look where Cancel sits (right button)
+loading_template: loading_logo        # Last Z loading screen: wait, don't press back
+loading_wait_seconds: 240
+restart_game_if_stuck: true           # force-restart Last Z if recovery can't reach the map
+# game_package: com.example.lastz     # auto-detected; set it here only if restarts fail
 # no_march_template: no_free_march    # add once captured
 
 # --- The march flow (matches the real screens, wood captured 10/26) -----------
@@ -53,7 +60,7 @@ gather_sequence:
   - find: search_button           # magnifying glass, bottom-left of the world map
   - find: resource_{resource}     # carousel tab, e.g. "Lumberyard"
     scroll_if_missing:            # swipe the carousel if the tab is off-screen
-      swipe: [0.80, 0.67, 0.25, 0.67]
+      swipe: [0.85, 0.67, 0.15, 0.67]
       tries: 3
   - ensure: level_6               # level resets per resource; force it to 6
     fix:
@@ -88,7 +95,7 @@ routines:
       - find: back_arrow            # tech tree -> alliance
       - find: back_arrow            # alliance -> world map
 
-  collect_hq:                     # EXP + zent + food bubbles in the city. Electricity is never collected.
+  collect_hq:                     # EXP + fuel + zent + food bubbles in the city. Electricity is never collected.
     every_minutes: [60, 100]
     retry_minutes: 20
     steps:
@@ -98,6 +105,10 @@ routines:
         optional: true
         repeat: 5
         timeout: 3
+      - find: collect_fuel        # red fuel (gas) can, middle of the city
+        optional: true
+        repeat: 2
+        timeout: 2
       - find: collect_zent        # gold Z coin bubbles, top row
         optional: true
         repeat: 8
@@ -110,5 +121,27 @@ routines:
           swipe: [0.15, 0.50, 0.85, 0.52]
           tries: 2
       - find: world_button        # back to the world map
+        back_if_missing: 2        # a stray tap may have opened a building menu
+        wait: [2.0, 3.0]
+
+  collect_explore:                # explorer idle reward (fills every 8 h)
+    every_minutes: [480, 540]
+    retry_minutes: 20
+    steps:
+      - find: home_map            # -> city
+        wait: [2.0, 3.0]
+      - find: explore_chest       # red chest with timer by the road (never the crossed swords)
+        optional: true
+        timeout: 3
+        wait: [1.5, 2.2]
+      - find: explore_collect     # green Collect on the Idle Reward popup
+        optional: true
+        timeout: 3
+        wait: [2.0, 3.0]
+      - find: explore_congrats    # "Congratulations!" - tap to close
+        optional: true
+        timeout: 3
+      - find: world_button        # back to the world map
+        back_if_missing: 2
         wait: [2.0, 3.0]
 

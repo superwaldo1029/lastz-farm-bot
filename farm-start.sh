@@ -32,6 +32,14 @@ cat > "$PLIST" <<PL
 </dict></plist>
 PL
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+# bootout finishes in the background; wait until the old copy is really gone
+for i in $(seq 1 20); do
+  launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || break
+  sleep 0.5
+done
+if ! launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null; then
+  sleep 2
+  launchctl bootstrap "gui/$(id -u)" "$PLIST"
+fi
 echo "Farm bot started. It will also start automatically when you log in."
 echo "Watch it:  ./farm-status.sh      Stop it:  ./farm-stop.sh"

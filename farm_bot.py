@@ -67,8 +67,27 @@ class Device:
         self._run("shell", "input", "keyevent", 4)
 
     def swipe(self, x1, y1, x2, y2):
-        dur = random.randint(350, 600)
+        # Slow drag: fast flicks get ignored or snapped back by some of the game's lists.
+        dur = random.randint(750, 1100)
         self._run("shell", "input", "swipe", x1, y1, x2, y2, dur)
+
+    def foreground_package(self):
+        """Package name of the app on screen, e.g. com.xxx.lastz (None if unknown)."""
+        try:
+            out = self._run("shell", "dumpsys", "window", timeout=15).decode(errors="ignore")
+        except Exception:
+            return None
+        for line in out.splitlines():
+            if "mCurrentFocus" in line or "mFocusedApp" in line:
+                for tok in line.replace("}", " ").split():
+                    if "/" in tok and "." in tok.split("/")[0]:
+                        return tok.split("/")[0]
+        return None
+
+    def restart_app(self, package):
+        self._run("shell", "am", "force-stop", package)
+        time.sleep(3)
+        self._run("shell", "monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1")
 
 
 # --------------------------------------------------------------------------- #
@@ -161,19 +180,57 @@ class FarmBot:
         cv2.imwrite(str(path), screen)
         log.info("[%s] saved debug screenshot %s", self.name, path.name)
 
-    def reset(self):
-        """Back out to a known screen. Uses the 'home_check' template if you made one."""
+    def _seen(self, screen, name, region=None):
+        """Is template `name` on this already-captured screen? Returns its box or None."""
+        if not name:
+            return None
+        img = screen
+        ox = oy = 0
+        if region:
+            H, W = screen.shape[:2]
+            ox, oy = int(region[0] * W), int(region[1] * H)
+            img = screen[oy:int(region[3] * H), ox:int(region[2] * W)]
+        score, x, y, w, h = self.tpl.match(img, name)
+        if score >= self.thresholds.get(name, self.threshold):
+            return (x + ox, y + oy, w, h)
+        return None
+
+    def recover(self, allow_restart=True) -> bool:
+        """Get back to the world map from wherever the game is. True if we got there.
+        Handles: the "Exit the game?" popup (taps Cancel, never Confirm), the loading
+        screen (waits, never presses back), the city (taps World), other popups (back).
+        If all that fails, restarts the game once."""
         home = self.cfg.get("home_template")
+        if not home:
+            return True
         cancel = self.cfg.get("exit_cancel_template")
-        for _ in range(self.cfg.get("reset_back_presses", 4)):
-            if home:
-                _, box = self.wait_for(home, timeout=0)
-                if box:
-                    return
-            # reset_taps: buttons that lead home (e.g. "World" in the city) - tap instead of pressing back
+        cancel_region = self.cfg.get("exit_cancel_region")
+        loading = self.cfg.get("loading_template")
+        loading_deadline = time.time() + self.cfg.get("loading_wait_seconds", 240)
+        backs = 0
+        max_backs = self.cfg.get("reset_back_presses", 6)
+        while True:
+            screen = self.dev.screenshot()
+            if self._seen(screen, home):
+                if not getattr(self, "pkg", None):
+                    self.pkg = self.cfg.get("game_package") or self.dev.foreground_package()
+                return True
+            box = self._seen(screen, cancel, cancel_region)
+            if box:
+                log.info("[%s] recover: 'Exit the game?' -> Cancel", self.name)
+                self.dev.tap(*jitter_point(*box))
+                human_sleep((1.5, 2.5))
+                continue
+            if self._seen(screen, loading):
+                if time.time() < loading_deadline:
+                    log.debug("[%s] recover: loading screen, waiting", self.name)
+                    time.sleep(random.uniform(8, 12))
+                    continue
+                log.warning("[%s] recover: stuck on loading screen", self.name)
+                break
             tapped = False
             for t in self.cfg.get("reset_taps", []) or []:
-                _, tbox = self.wait_for(t, timeout=0)
+                tbox = self._seen(screen, t)
                 if tbox:
                     self.dev.tap(*jitter_point(*tbox))
                     human_sleep((1.5, 2.5))
@@ -181,14 +238,24 @@ class FarmBot:
                     break
             if tapped:
                 continue
+            if backs >= max_backs:
+                break
             self.dev.back()
-            human_sleep((0.8, 1.4))
-            if cancel:  # pressing back on the main screen may open "Exit game?"
-                _, box = self.wait_for(cancel, timeout=0)
-                if box:
-                    self.dev.tap(*jitter_point(*box))
-                    human_sleep((0.6, 1.0))
-                    return
+            backs += 1
+            human_sleep((1.2, 2.0))
+        self.save_debug(screen, "recover-failed")
+        pkg = getattr(self, "pkg", None) or self.cfg.get("game_package")
+        if allow_restart and pkg and self.cfg.get("restart_game_if_stuck", True):
+            log.warning("[%s] recover: restarting game (%s)", self.name, pkg)
+            self.dev.restart_app(pkg)
+            time.sleep(random.uniform(25, 35))
+            return self.recover(allow_restart=False)
+        log.error("[%s] recover: could not reach the world map", self.name)
+        return False
+
+    def reset(self):
+        """Back to the world map after a task (kept for compatibility)."""
+        return self.recover()
 
     # -- one step from config ---------------------------------------------- #
     def do_step(self, step: dict, resource: str) -> str:
@@ -209,6 +276,13 @@ class FarmBot:
                     screen, box = self.wait_for(name, timeout=2, region=region)
                     if box:
                         break
+            # back_if_missing: N -> press Android back up to N times (closes a menu opened by a stray tap)
+            for _ in range(int(step.get("back_if_missing", 0)) if not box else 0):
+                self.dev.back()
+                human_sleep((1.2, 1.8))
+                screen, box = self.wait_for(name, timeout=2, region=region)
+                if box:
+                    break
             # Scrollable lists (e.g. the resource carousel): swipe one way, then the other.
             scroll = step.get("scroll_if_missing")
             if not box and scroll:
@@ -308,6 +382,10 @@ class FarmBot:
     def cycle(self) -> int:
         self.dev.connect()
         sent = 0
+        # Make sure we're on the world map first (handles reconnects, popups, game restarts).
+        if not self.recover():
+            log.error("[%s] game not on the world map - skipping this cycle", self.name)
+            return 0
         order = self.resources[:]
         shuffle = self.cfg.get("shuffle_resources", True)
         if shuffle:
@@ -342,7 +420,7 @@ class FarmBot:
                     log.warning("[%s] routine %s failed at %s", self.name, name, step)
                     ok = False
                     break
-            self.reset()
+            home_ok = self.reset()
             if ok:
                 lo, hi = r.get("every_minutes", [120, 180])
                 mins = random.uniform(lo, hi)
@@ -350,6 +428,9 @@ class FarmBot:
                 mins = r.get("retry_minutes", 20)
             self.routine_due[name] = time.time() + mins * 60
             log.info("[%s] routine %s %s, next in %.0f min", self.name, name, "done" if ok else "failed", mins)
+            if not home_ok:
+                log.error("[%s] lost the world map - skipping remaining routines", self.name)
+                break
             human_sleep(self.cfg.get("between_marches", [2, 6]))
 
 
