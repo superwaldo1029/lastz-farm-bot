@@ -71,6 +71,27 @@ class Device:
         dur = random.randint(750, 1100)
         self._run("shell", "input", "swipe", x1, y1, x2, y2, dur)
 
+    def drag(self, x1, y1, x2, y2, steps=10):
+        """Finger-like drag: press, move in small steps, hold, release. Some game lists ignore
+        `input swipe` but respond to this. Falls back to swipe if motionevent isn't supported."""
+        if getattr(self, "_motion_ok", None) is not False:
+            parts = [f"input motionevent DOWN {x1} {y1}", "sleep 0.15"]
+            for i in range(1, steps + 1):
+                xi = int(x1 + (x2 - x1) * i / steps)
+                yi = int(y1 + (y2 - y1) * i / steps)
+                parts += [f"input motionevent MOVE {xi} {yi}", "sleep 0.04"]
+            parts += ["sleep 0.35", f"input motionevent UP {x2} {y2}"]
+            try:
+                out = self._run("shell", " ; ".join(parts), timeout=20).decode(errors="ignore").lower()
+                if "usage" in out or "error" in out or "unknown" in out:
+                    raise RuntimeError(out[:200])
+                self._motion_ok = True
+                return
+            except Exception as e:
+                self._motion_ok = False
+                log.info("motionevent drag not supported here, using swipe (%s)", str(e)[:80])
+        self.swipe(x1, y1, x2, y2)
+
     def foreground_package(self):
         """Package name of the app on screen, e.g. com.xxx.lastz (None if unknown)."""
         try:
@@ -260,6 +281,11 @@ class FarmBot:
     # -- one step from config ---------------------------------------------- #
     def do_step(self, step: dict, resource: str) -> str:
         """Returns 'ok', 'skipped', or 'fail'."""
+        # skip_if: <template> -> skip this step when that template is already on screen
+        if step.get("skip_if"):
+            _, already = self.wait_for(step["skip_if"], timeout=0)
+            if already:
+                return "skipped"
         wait_after = step.get("wait", self.cfg.get("default_wait", [0.8, 1.6]))
         timeout = step.get("timeout", self.cfg.get("default_timeout", 6))
 
@@ -292,13 +318,21 @@ class FarmBot:
                 for fwd in (True, False):
                     for _ in range(tries if fwd else tries * 2):
                         a, b = ((x1, y1), (x2, y2)) if fwd else ((x2, y2), (x1, y1))
-                        self.dev.swipe(int(a[0] * w), int(a[1] * h), int(b[0] * w), int(b[1] * h))
+                        self.dev.drag(int(a[0] * w), int(a[1] * h), int(b[0] * w), int(b[1] * h))
                         human_sleep((0.8, 1.3))
                         screen, box = self.wait_for(name, timeout=0)
                         if box:
                             break
                     if box:
                         break
+            # tap_frac_if_missing: [[x, y], ...] -> tap these spots (e.g. a half-visible tab) and look again
+            for fx, fy in (step.get("tap_frac_if_missing") or []) if not box else []:
+                h, w = screen.shape[:2]
+                self.dev.tap(int(w * fx + random.uniform(-8, 8)), int(h * fy + random.uniform(-8, 8)))
+                human_sleep((1.0, 1.5))
+                screen, box = self.wait_for(name, timeout=1.5, region=region)
+                if box:
+                    break
             if not box:
                 if step.get("optional"):
                     return "skipped"
@@ -346,6 +380,15 @@ class FarmBot:
             y = int(h * fy + random.uniform(-h * 0.015, h * 0.015))
             self.dev.tap(x, y)
 
+        elif "drag" in step:  # scroll the view: [x1, y1, x2, y2] as screen fractions
+            screen = self.dev.screenshot()
+            h, w = screen.shape[:2]
+            x1, y1, x2, y2 = step["drag"]
+            j = lambda v: random.uniform(-0.015, 0.015) + v
+            self.dev.drag(int(j(x1) * w), int(j(y1) * h), int(j(x2) * w), int(j(y2) * h))
+            human_sleep(step.get("wait", [1.2, 1.8]))
+            return "ok"
+
         elif step.get("back"):
             self.dev.back()
 
@@ -386,6 +429,11 @@ class FarmBot:
         if not self.recover():
             log.error("[%s] game not on the world map - skipping this cycle", self.name)
             return 0
+        blocked = in_weekly_window(self.cfg.get("no_gather_windows"))
+        if blocked:
+            log.info("[%s] gathering paused (%s) - troops stay home", self.name, blocked)
+            self.run_routines()
+            return 0
         order = self.resources[:]
         shuffle = self.cfg.get("shuffle_resources", True)
         if shuffle:
@@ -407,19 +455,36 @@ class FarmBot:
         return sent
 
     # -- timed side tasks (donate, collect, ...) ----------------------------- #
+    def _run_routine_steps(self, name, r) -> bool:
+        """Run one routine's steps. With loop_while: <template>, repeat the steps while that
+        template is on screen (e.g. recall every gathering squad), up to `max_loops` times."""
+        loop_tpl = r.get("loop_while")
+        loop_region = r.get("loop_region")
+        loops = int(r.get("max_loops", 1)) if loop_tpl else 1
+        for i in range(loops):
+            if loop_tpl:
+                _, box = self.wait_for(loop_tpl, timeout=2, region=loop_region)
+                if not box:
+                    if i == 0:
+                        log.info("[%s] routine %s: nothing to do", self.name, name)
+                    break
+            for step in r["steps"]:
+                if self.do_step(step, "") == "fail":
+                    log.warning("[%s] routine %s failed at %s", self.name, name, step)
+                    return False
+            if loop_tpl:
+                log.info("[%s] routine %s: pass %d done", self.name, name, i + 1)
+        return True
+
     def run_routines(self):
+        """Interval routines (every_minutes). Fixed-time routines (at:) run from run_scheduled()."""
         for name, r in (self.cfg.get("routines") or {}).items():
-            if not r.get("enabled", True):
+            if not r.get("enabled", True) or r.get("at"):
                 continue
             if time.time() < self.routine_due.get(name, 0):
                 continue
             log.info("[%s] routine: %s", self.name, name)
-            ok = True
-            for step in r["steps"]:
-                if self.do_step(step, "") == "fail":
-                    log.warning("[%s] routine %s failed at %s", self.name, name, step)
-                    ok = False
-                    break
+            ok = self._run_routine_steps(name, r)
             home_ok = self.reset()
             if ok:
                 lo, hi = r.get("every_minutes", [120, 180])
@@ -433,10 +498,67 @@ class FarmBot:
                 break
             human_sleep(self.cfg.get("between_marches", [2, 6]))
 
+    def run_scheduled(self, now=None) -> bool:
+        """Fixed weekly-time routines, e.g. at: ["Fri 20:30"]. Fires once per occurrence,
+        as soon as possible after the time (within `at_window_minutes`, default 15).
+        If a run fails it retries every loop until it succeeds or the window closes."""
+        now = now or dt.datetime.now()
+        cur = now.weekday() * 1440 + now.hour * 60 + now.minute
+        ran = False
+        self.sched_done = getattr(self, "sched_done", set())
+        for name, r in (self.cfg.get("routines") or {}).items():
+            if not r.get("enabled", True):
+                continue
+            for spec in r.get("at") or []:
+                start = _week_minute(spec)
+                window = int(r.get("at_window_minutes", 15))
+                if not (0 <= (cur - start) % 10080 < window):
+                    continue
+                key = (name, spec, (now - dt.timedelta(minutes=(cur - start) % 10080)).strftime("%Y-%m-%d %H:%M"))
+                if key in self.sched_done:
+                    continue
+                log.info("[%s] scheduled routine: %s (%s)", self.name, name, spec)
+                self.dev.connect()
+                if not self.recover():
+                    log.error("[%s] scheduled %s: can't reach world map, will retry", self.name, name)
+                    continue
+                ok = self._run_routine_steps(name, r)
+                self.reset()
+                if ok:
+                    self.sched_done.add(key)
+                    log.info("[%s] scheduled routine %s done", self.name, name)
+                else:
+                    log.warning("[%s] scheduled routine %s failed, retrying shortly", self.name, name)
+                ran = True
+        return ran
+
 
 # --------------------------------------------------------------------------- #
 # Scheduling
 # --------------------------------------------------------------------------- #
+DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def _week_minute(spec: str) -> int:
+    """'Fri 20:30' -> minutes since Monday 00:00."""
+    day, hm = spec.strip().split()
+    h, m = hm.split(":")
+    return DAYS.index(day[:3].lower()) * 1440 + int(h) * 60 + int(m)
+
+
+def in_weekly_window(windows, now=None):
+    """Return the matching window's name if `now` (local time) falls inside any
+    {start: 'Fri 20:30', end: 'Sat 21:00'} window, else None. Handles wrap past Sunday."""
+    now = now or dt.datetime.now()
+    cur = now.weekday() * 1440 + now.hour * 60 + now.minute
+    for w in windows or []:
+        s, e = _week_minute(w["start"]), _week_minute(w["end"])
+        inside = s <= cur < e if s < e else (cur >= s or cur < e)
+        if inside:
+            return w.get("name", f"{w['start']} - {w['end']}")
+    return None
+
+
 def in_active_hours(cfg) -> bool:
     hours = cfg.get("active_hours")
     if not hours:
@@ -455,6 +577,10 @@ def run_forever(cfg):
             time.sleep(300)
             continue
         for bot in bots:
+            try:  # fixed-time routines (recall, shield...) are checked every loop, not every cycle
+                bot.run_scheduled()
+            except Exception as e:
+                log.error("[%s] scheduled error: %s", bot.name, e)
             if time.time() < next_run[bot.name]:
                 continue
             try:

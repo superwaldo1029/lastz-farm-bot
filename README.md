@@ -16,7 +16,8 @@ Each cycle, per BlueStacks instance:
 After the marches, timed **routines** run whenever they're due:
 
 - **donate_tech** (every 100–130 min): Alliance → Alliance Techs → the leader's thumbs-up tech (checks the Develop, Combat and Dominator tabs) → taps the **blue zent Donate** button until attempts run out. The gem Donate button is never tapped: the bot only looks on the right half of the popup, and the zent template scores 0.40 against the gem button.
-- **collect_hq** (every 60–100 min): Headquarters → city → taps all EXP, gold Z coin (zent) and food bubbles → World. **Electricity is never collected**, because there's no template for it.
+- **collect_hq** (every 60–100 min): Headquarters → city → taps all EXP, fuel, zent and silver bubbles, then re-centres and taps food and wood bubbles → World.
+- **collect_explore** (every 8–9 h): taps the explorer chest → Collect → closes the reward screen. **Electricity is never collected**, because there's no template for it.
 
 Every tap lands at a random point inside its button with a random hold time. Waits and check intervals are randomized too.
 
@@ -105,10 +106,17 @@ The service runs under `caffeinate`, so the Mac won't idle-sleep. Closing the li
 
 When a step fails, the bot saves a screenshot to `debug/`.
 
+## Weekly Enemy Buster schedule (local Mac time)
+
+- **Fri 20:30 → Sat 21:00:** no gather marches (`no_gather_windows`). Donations and collections keep running.
+- **Fri 20:30:** `recall_troops` taps each squad with the gathering badge, then taps **Return**, repeating until none are left. It retries until 20:45.
+- **Fri 21:00:** `shield_24h` goes HQ → World (map centres on your base) → base → Buff → Peace Shield → **Use** on the **24h** row only. It aborts unless the shield shows *Inactive* and the 24h row is where it expects. It never taps the gem *Purchase & Use* button.
+
+Fixed-time routines use `at: ["Fri 20:30"]` and are checked every ~30 s, independent of the gather cycle.
+
 ## To do
 
 - Reconnect popup after the Mac wakes or the game drops its connection
 - "Exit game?" popup handling
-- Wood bubbles on the lumber yards (not captured yet)
 - Optional fixed squad-to-resource pairing
 - Second farm instance
