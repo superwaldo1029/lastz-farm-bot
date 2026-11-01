@@ -12,11 +12,16 @@ match_threshold: 0.85         # default for every template
 thresholds:
   level_6: 0.93               # strict: "Lv.5" looks a lot like "Lv.6"
   idle_squad: 0.72
+  shield_24h_label: 0.95      # the 8h label scores 0.88 against it - keep strict
+  shield_use: 0.90            # 'Purchase & Use' (gems) scores 0.36
+  shield_inactive: 0.90
   back_arrow: 0.90            # dimmed arrow behind popups scores ~0.79
   collect_exp: 0.80           # all 3 EXP bubbles 0.95+, anything else <0.68
   collect_zent: 0.78          # Z coin bubbles 0.84+, anything else <0.54
   collect_food: 0.82          # food cans 0.90+, anything else <0.72
   collect_fuel: 0.85          # red fuel can 1.00, anything else <0.57
+  collect_wood: 0.85          # log bubbles 0.96+, anything else <0.73
+  collect_silver: 0.88        # silver coin stacks 0.93+
   explore_chest: 0.92         # chest 1.00; the crossed-swords battle icon in the same spot scores 0.78            # "zZ" scores 0.83-1.00 when idle, <0.6 otherwise
 
 # One entry per BlueStacks instance (one farm account each).
@@ -40,6 +45,12 @@ default_wait: [0.8, 1.6]
 default_timeout: 6
 between_marches: [2, 6]
 cycle_minutes: [25, 45]
+
+# Weekly windows (local Mac time) with NO gather marches. Routines still run.
+no_gather_windows:
+  - name: Enemy Buster
+    start: Fri 20:30
+    end: Sat 21:00
 # active_hours: [7, 23]       # runs 24/7; uncomment to give it a sleep window
 
 # --- Safety -------------------------------------------------------------------
@@ -62,6 +73,7 @@ gather_sequence:
     scroll_if_missing:            # swipe the carousel if the tab is off-screen
       swipe: [0.85, 0.67, 0.15, 0.67]
       tries: 3
+    tap_frac_if_missing: [[0.86, 0.69]]   # last resort: tap the half-visible tab at the right edge
   - ensure: level_6               # level resets per resource; force it to 6
     fix:
       - {press: level_minus, times: 6}   # down to Lv.1
@@ -95,33 +107,55 @@ routines:
       - find: back_arrow            # tech tree -> alliance
       - find: back_arrow            # alliance -> world map
 
-  collect_hq:                     # EXP + fuel + zent + food bubbles in the city. Electricity is never collected.
+  collect_hq:                     # city bubbles: EXP, fuel, zent, silver, food, wood. Electricity is never collected.
     every_minutes: [60, 100]
     retry_minutes: 20
     steps:
-      - find: home_map            # "Headquarters" -> city view (centered on HQ)
+      # --- area 1: around HQ (camera always centers on HQ when entering the city)
+      - find: home_map            # "Headquarters" -> city
         wait: [2.0, 3.0]
-      - find: collect_exp         # EXP bubbles, left-hand buildings
+      - find: collect_exp         # green EXP bubbles
         optional: true
         repeat: 5
+        repeat_wait: [1.4, 2.0]
         timeout: 3
-      - find: collect_fuel        # red fuel (gas) can, middle of the city
+      - find: collect_fuel        # red fuel (gas) can
         optional: true
         repeat: 2
+        repeat_wait: [1.4, 2.0]
         timeout: 2
-      - find: collect_zent        # gold Z coin bubbles, top row
+      - find: collect_zent        # gold Z coin bubbles
         optional: true
         repeat: 8
+        repeat_wait: [1.4, 2.0]
         timeout: 2
-      - find: collect_food        # food cans on the farms (scrolls over if needed)
+      # --- area 2: blue-roof buildings to the right of HQ
+      - drag: [0.75, 0.55, 0.25, 0.55]
+      - find: collect_silver      # silver coin-stack bubbles
+        optional: true
+        repeat: 8
+        repeat_wait: [1.4, 2.0]
+        timeout: 2
+      # --- re-center on HQ: World -> Headquarters
+      - find: world_button
+        back_if_missing: 4
+        wait: [2.0, 3.0]
+      - find: home_map
+        wait: [2.0, 3.0]
+      # --- area 3: farms + lumber yards, down-left of HQ
+      - drag: [0.15, 0.50, 0.85, 0.52]
+      - find: collect_food        # food cans
         optional: true
         repeat: 6
+        repeat_wait: [1.4, 2.0]
         timeout: 2
-        scroll_if_missing:
-          swipe: [0.15, 0.50, 0.85, 0.52]
-          tries: 2
+      - find: collect_wood        # log bubbles on the lumber yards
+        optional: true
+        repeat: 6
+        repeat_wait: [1.4, 2.0]
+        timeout: 2
       - find: world_button        # back to the world map
-        back_if_missing: 2        # a stray tap may have opened a building menu
+        back_if_missing: 4
         wait: [2.0, 3.0]
 
   collect_explore:                # explorer idle reward (fills every 8 h)
@@ -142,6 +176,49 @@ routines:
         optional: true
         timeout: 3
       - find: world_button        # back to the world map
-        back_if_missing: 2
+        back_if_missing: 4
+        wait: [2.0, 3.0]
+
+  recall_troops:                  # Enemy Buster: bring every gathering squad home
+    at: ["Fri 20:30"]             # local Mac time; fires within ~40 s of this
+    at_window_minutes: 15         # keeps retrying until 20:45 if something goes wrong
+    loop_while: squad_gathering   # repeat while any squad in the queue shows the green pickaxe
+    loop_region: [0.86, 0.45, 1.00, 0.72]
+    max_loops: 4
+    steps:
+      - find: squad_gathering     # tap the gathering squad's avatar in the queue
+        region: [0.86, 0.45, 1.00, 0.72]
+        offset: [30, 28]          # badge -> avatar centre
+        wait: [2.0, 3.0]          # map jumps to the squad's tile
+      - find: map_gather_marker   # green pickaxe above the tile
+        skip_if: recall_return    # the game sometimes opens the Return popup straight away
+        optional: true
+        region: [0.00, 0.15, 0.85, 0.90]
+        wait: [1.2, 1.8]
+      - tap_frac: [0.5, 0.49]     # fallback: the squad's tile sits at screen centre (marker can be hidden)
+        skip_if: recall_return
+        wait: [1.5, 2.2]
+      - find: recall_return       # "Return" - no confirm, no cost
+        timeout: 5
+        wait: [1.5, 2.5]
+
+  shield_24h:                     # Enemy Buster: 24h Peace Shield, Fri 21:00 sharp
+    at: ["Fri 21:00"]
+    at_window_minutes: 15
+    steps:
+      - find: home_map            # into the city...
+        wait: [2.0, 3.0]
+      - find: world_button        # ...and back out: the map is now centred on your base
+        wait: [2.5, 3.5]
+      - tap_frac: [0.5, 0.525]    # tap your base -> ring menu
+        wait: [1.2, 1.8]
+      - find: base_buff           # "Buff"
+        wait: [1.5, 2.2]
+      - find: peace_shield_row    # Formation -> Peace Shield
+        wait: [1.5, 2.2]
+      - ensure: shield_inactive   # STOP if a shield is already up (never stack/waste one)
+      - ensure: shield_24h_label  # STOP unless the 24h row is where we expect it
+      - find: shield_use          # blue "Use" in the 24h row ONLY (gem purchase never matches)
+        region: [0.63, 0.66, 0.86, 0.73]
         wait: [2.0, 3.0]
 
